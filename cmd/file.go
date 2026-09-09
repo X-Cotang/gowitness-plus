@@ -6,9 +6,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/remeh/sizedwaitgroup"
 	"github.com/sensepost/gowitness/lib"
 	"github.com/spf13/cobra"
+	"golang.org/x/sync/errgroup"
 )
 
 // fileCmd represents the file command
@@ -37,8 +37,9 @@ $ gowitness file -f <( shuf domains ) --no-http`,
 			log.Fatal().Err(err).Msg("failed to get a db handle")
 		}
 
-		log.Debug().Int("threads", options.Threads).Msg("thread count to use with goroutines")
-		swg := sizedwaitgroup.New(options.Threads)
+		log.Debug().Int("threads", options.ThreadCount()).Msg("thread count to use with goroutines")
+		pool := new(errgroup.Group)
+		pool.SetLimit(options.ThreadCount())
 
 		if err = options.PrepareScreenshotPath(); err != nil {
 			log.Fatal().Err(err).Msg("failed to prepare the screenshot path")
@@ -54,28 +55,26 @@ $ gowitness file -f <( shuf domains ) --no-http`,
 			}
 
 			for _, u := range getUrls(candidate) {
-				swg.Add()
-
 				log.Debug().Str("url", u.String()).Msg("queueing goroutine for url")
-				go func(url *url.URL) {
-					defer swg.Done()
-
+				pool.Go(func() error {
 					p := &lib.Processor{
 						Logger:         log,
 						Db:             db,
 						Chrome:         chrm,
-						URL:            url,
+						URL:            u,
 						ScreenshotPath: options.ScreenshotPath,
 					}
 
 					if err := p.Gowitness(); err != nil {
-						log.Error().Err(err).Str("url", url.String()).Msg("failed to witness url")
+						log.Error().Err(err).Str("url", u.String()).Msg("failed to witness url")
 					}
-				}(u)
+
+					return nil
+				})
 			}
 		}
 
-		swg.Wait()
+		pool.Wait()
 		log.Info().Msg("processing complete")
 	},
 }

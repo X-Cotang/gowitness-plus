@@ -6,9 +6,9 @@ import (
 	"net/url"
 	"os"
 
-	"github.com/remeh/sizedwaitgroup"
 	"github.com/sensepost/gowitness/lib"
 	"github.com/spf13/cobra"
+	"golang.org/x/sync/errgroup"
 )
 
 // nessusCmd represents the nessus command
@@ -82,39 +82,38 @@ $ gowitness nessus --file output.nessus --port 80 --port 8080`,
 			log.Fatal().Err(err).Msg("failed to get a db handle")
 		}
 
-		// prepare swg
-		log.Debug().Int("threads", options.Threads).Msg("thread count to use with goroutines")
-		swg := sizedwaitgroup.New(options.Threads)
+		// prepare the worker pool
+		log.Debug().Int("threads", options.ThreadCount()).Msg("thread count to use with goroutines")
+		pool := new(errgroup.Group)
+		pool.SetLimit(options.ThreadCount())
 
 		// process!
 		for _, target := range targets {
 			u, err := url.Parse(target)
 			if err != nil {
-				log.Warn().Str("url", u.String()).Msg("skipping invalid url")
+				log.Warn().Str("url", target).Msg("skipping invalid url")
 				continue
 			}
 
-			swg.Add()
-
 			log.Debug().Str("url", u.String()).Msg("queueing goroutine for url")
-			go func(url *url.URL) {
-				defer swg.Done()
-
+			pool.Go(func() error {
 				p := &lib.Processor{
 					Logger:         log,
 					Db:             db,
 					Chrome:         chrm,
-					URL:            url,
+					URL:            u,
 					ScreenshotPath: options.ScreenshotPath,
 				}
 
 				if err := p.Gowitness(); err != nil {
-					log.Debug().Err(err).Str("url", url.String()).Msg("failed to witness url")
+					log.Debug().Err(err).Str("url", u.String()).Msg("failed to witness url")
 				}
-			}(u)
+
+				return nil
+			})
 		}
 
-		swg.Wait()
+		pool.Wait()
 		log.Info().Msg("processing complete")
 	},
 }

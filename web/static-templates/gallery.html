@@ -1,0 +1,170 @@
+{{ define "gallery.html" }}<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>gowitness report</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #14171c;
+        --card: #1c2027;
+        --border: #2b313b;
+        --text: #e6e9ef;
+        --muted: #9aa4b2;
+        --accent: #4c8dff;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        padding: 24px;
+        background: var(--bg);
+        color: var(--text);
+        font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          Helvetica, Arial, sans-serif;
+      }
+      header {
+        display: flex;
+        align-items: baseline;
+        gap: 12px;
+        margin-bottom: 20px;
+      }
+      h1 { font-size: 20px; margin: 0; }
+      .count { color: var(--muted); }
+      .filter {
+        width: 100%;
+        max-width: 420px;
+        margin-bottom: 20px;
+        padding: 8px 12px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--card);
+        color: var(--text);
+        font-size: 14px;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+        gap: 16px;
+      }
+      .card {
+        display: flex;
+        flex-direction: column;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--card);
+        overflow: hidden;
+      }
+      .card img {
+        width: 100%;
+        height: 200px;
+        object-fit: cover;
+        object-position: top;
+        background: #0f1216;
+        border-bottom: 1px solid var(--border);
+      }
+      .card .body { padding: 12px; }
+      .card a.url {
+        color: var(--accent);
+        text-decoration: none;
+        font-weight: 600;
+        word-break: break-all;
+      }
+      .card a.url:hover { text-decoration: underline; }
+      .title {
+        color: var(--muted);
+        margin-top: 4px;
+        word-break: break-word;
+      }
+      .meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 10px;
+      }
+      .badge {
+        padding: 2px 8px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .code-2xx { border-color: #2f7a4d; color: #74d99f; }
+      .code-3xx { border-color: #2f5f7a; color: #74bfd9; }
+      .code-4xx { border-color: #7a6b2f; color: #d9c874; }
+      .code-5xx { border-color: #7a2f2f; color: #d97474; }
+      .empty { color: var(--muted); padding: 40px 0; text-align: center; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>gowitness report</h1>
+      <span class="count">{{ len . }} screenshot(s)</span>
+    </header>
+
+    <input
+      class="filter"
+      id="filter"
+      type="search"
+      placeholder="Filter by url, title or technology..."
+      autocomplete="off"
+    />
+
+    <div class="grid" id="grid">
+      {{ range . }}
+      <div
+        class="card"
+        data-search="{{ printf "%s %s %s" .URL .FinalURL .Title }}{{ range .Technologies }} {{ .Value }}{{ end }}"
+      >
+        {{ if .Filename }}
+        <a href="screenshots/{{ .Filename }}" target="_blank" rel="noreferrer">
+          <img src="screenshots/{{ .Filename }}" alt="{{ .URL }}" loading="lazy" />
+        </a>
+        {{ end }}
+        <div class="body">
+          <a class="url" href="{{ .URL }}" target="_blank" rel="noreferrer">{{ .URL }}</a>
+          {{ if .Title }}<div class="title">{{ .Title }}</div>{{ end }}
+          <div class="meta">
+            <span
+              class="badge {{ if lt .ResponseCode 300 }}code-2xx{{ else if lt .ResponseCode 400 }}code-3xx{{ else if lt .ResponseCode 500 }}code-4xx{{ else }}code-5xx{{ end }}"
+              >{{ .ResponseCode }}</span
+            >
+            {{ if .Proto }}<span class="badge">{{ .Proto }}</span>{{ end }}
+            {{ range .Technologies }}<span class="badge">{{ .Value }}</span>{{ end }}
+          </div>
+        </div>
+      </div>
+      {{ end }}
+    </div>
+
+    <div class="empty" id="empty" hidden>No screenshots match that filter.</div>
+
+    <script>
+      (function () {
+        var filter = document.getElementById("filter");
+        var cards = Array.prototype.slice.call(
+          document.querySelectorAll("#grid .card")
+        );
+        var empty = document.getElementById("empty");
+
+        filter.addEventListener("input", function () {
+          var term = filter.value.trim().toLowerCase();
+          var shown = 0;
+
+          cards.forEach(function (card) {
+            var match =
+              term === "" ||
+              (card.getAttribute("data-search") || "")
+                .toLowerCase()
+                .indexOf(term) !== -1;
+            card.hidden = !match;
+            if (match) shown++;
+          });
+
+          empty.hidden = shown !== 0;
+        });
+      })();
+    </script>
+  </body>
+</html>
+{{ end }}

@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	"github.com/olekukonko/tablewriter"
+	"github.com/olekukonko/tablewriter/tw"
 	"github.com/sensepost/gowitness/storage"
 	"github.com/spf13/cobra"
 )
@@ -65,7 +66,9 @@ $ gowitness report list --csv --sort`,
 			return
 		}
 
-		outputTable(&data)
+		if err := outputTable(&data); err != nil {
+			log.Fatal().Err(err).Msg("failed to output table")
+		}
 	},
 }
 
@@ -101,14 +104,19 @@ func outputCSV(d *[]storage.URL) {
 }
 
 // outputTable prints the output to stdout in table format
-func outputTable(d *[]storage.URL) {
+func outputTable(d *[]storage.URL) error {
 
-	table := tablewriter.NewWriter(os.Stdout)
-	table.SetAutoFormatHeaders(false)
-	table.SetAutoWrapText(false)
-	table.SetHeader([]string{"final url", "status", "title"})
+	table := tablewriter.NewTable(os.Stdout,
+		tablewriter.WithHeaderAutoFormat(tw.Off),
+		tablewriter.WithHeaderAutoWrap(tw.WrapNone),
+		tablewriter.WithRowAutoWrap(tw.WrapNone),
+	)
+	table.Header([]string{"final url", "status", "title"})
 	for _, l := range *d {
-		table.Append([]string{l.FinalURL, strconv.Itoa(l.ResponseCode), l.Title})
+		if err := table.Append([]string{l.FinalURL, strconv.Itoa(l.ResponseCode), l.Title}); err != nil {
+			return err
+		}
 	}
-	table.Render()
+
+	return table.Render()
 }

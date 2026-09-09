@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"archive/zip"
-	"bytes"
 	"html/template"
 	"io"
 	"os"
@@ -30,8 +29,15 @@ specified will be the target for the final ZIP file that will be created.
 			log.Fatal().Msg("a target file must be specified with --file / -f")
 		}
 
-		tmpl := template.Must(template.ParseFS(Embedded, "web/static-templates/*.html"))
+		tmpl, err := template.ParseFS(Embedded, "web/static-templates/*.html")
+		if err != nil {
+			log.Fatal().Err(err).Msg("could not parse the embedded report templates")
+		}
+
 		t := tmpl.Lookup("gallery.html")
+		if t == nil {
+			log.Fatal().Msg("the gallery.html report template is missing")
+		}
 
 		// db
 		dbh, err := db.Get()
@@ -86,31 +92,20 @@ specified will be the target for the final ZIP file that will be created.
 			log.Fatal().Str("screenshot-path", options.ScreenshotPath).Err(err).Msg("could not walk screenshot path and copy screenshots")
 		}
 
-		// copy template css & js to new path
-		js, err := Embedded.ReadFile("web/assets/js/tabler.min.js")
-		if err != nil {
-			log.Fatal().Err(err).Msg("could not open embedded javascript")
-		}
-		if err := copyByte(js, tempDir+"/"+"tabler.min.js"); err != nil {
-			log.Fatal().Err(err).Msg("failed to write tabler.min.js to file")
-		}
-
-		css, err := Embedded.ReadFile("web/assets/css/tabler.min.css")
-		if err != nil {
-			log.Fatal().Err(err).Msg("could not open embedded css")
-		}
-		if err := copyByte(css, tempDir+"/"+"tabler.min.css"); err != nil {
-			log.Fatal().Err(err).Msg("failed to write tabler.min.css to file")
-		}
-
-		// write and generate the template
+		// write and generate the template. the template carries its own styling
+		// and script inline so that the report stays viewable offline.
 		f, err := os.Create(tempDir + "/index.html")
 		if err != nil {
 			log.Fatal().Err(err).Msg("failed to create index.html")
 		}
 
 		if err := t.Execute(f, urls); err != nil {
+			f.Close()
 			log.Fatal().Err(err).Msg("failed to generate template")
+		}
+
+		if err := f.Close(); err != nil {
+			log.Fatal().Err(err).Msg("failed to write index.html")
 		}
 
 		// create the destination archive
@@ -187,22 +182,6 @@ func copyFile(from string, to string) error {
 	defer d.Close()
 
 	_, err = io.Copy(d, s)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-// copyByte copies bytes to a file
-func copyByte(b []byte, to string) error {
-	d, err := os.Create(to)
-	if err != nil {
-		return err
-	}
-	defer d.Close()
-
-	_, err = io.Copy(d, bytes.NewReader(b))
 	if err != nil {
 		return err
 	}

@@ -1,21 +1,18 @@
-import {createRouter , createWebHistory } from 'vue-router'
+import { createRouter, createWebHistory } from 'vue-router'
 
-// const routes = [
-//     {paht:'/', name: 'home', component: ()=>import('../views/Home.vue')},
-//     {paht:'/gallery', name: 'gallery', component: ()=>import('../views/Gallery.vue')}
-// ]
+const routes = [
+    { path: '/', name: 'home', component: () => import('../views/Gallery.vue') },
+    { path: '/gallery', name: 'gallery', component: () => import('../views/Gallery.vue') },
+    { path: '/table', name: 'table', component: () => import('../views/Table.vue') },
+    { path: '/submit', name: 'submit', component: () => import('../views/Submit.vue') },
+    { path: '/log', name: 'log', component: () => import('../views/Log.vue') },
+    { path: '/config', name: 'config', component: () => import('../views/Config.vue') },
+    { path: '/detail/:id', name: 'detail', component: () => import('../views/Detail.vue') },
+]
 
 const router = createRouter({
-    routes: [],
+    routes,
     history: createWebHistory(),
 })
-
-router.addRoute({ path: '/', component: ()=>import('../views/Gallery.vue') })
-router.addRoute({ path: '/gallery', component: ()=>import('../views/Gallery.vue') })
-router.addRoute({ path: '/table', component: ()=>import('../views/Table.vue') })
-router.addRoute({ path: '/submit', component: ()=>import('../views/Submit.vue') })
-router.addRoute({ path: '/log', component: ()=>import('../views/Log.vue') })
-router.addRoute({ path: '/config', component: ()=>import('../views/Config.vue') })
-router.addRoute({ path: '/detail/:id', component: ()=>import('../views/Detail.vue') })
 
 export default router

@@ -1,6 +1,7 @@
 package lib
 
 import (
+	"fmt"
 	"os"
 
 	"github.com/rs/zerolog"
@@ -71,14 +72,31 @@ func NewOptions() *Options {
 	return &Options{}
 }
 
-// PrepareScreenshotPath prepares the path to save screenshots in
-func (opt *Options) PrepareScreenshotPath() error {
-
-	if _, err := os.Stat(opt.ScreenshotPath); os.IsNotExist(err) {
-		if err = os.Mkdir(opt.ScreenshotPath, 0750); err != nil {
-			return err
-		}
+// ThreadCount is the number of concurrent workers to use, guarding against
+// values that would otherwise stall the worker pool entirely.
+func (opt *Options) ThreadCount() int {
+	if opt.Threads < 1 {
+		return 1
 	}
 
-	return nil
+	return opt.Threads
+}
+
+// PrepareScreenshotPath makes sure the screenshot directory exists and that we
+// can actually write to it. The write probe matters because the directory is
+// often a mount shared with the container (which runs as nobody), in which case
+// creation succeeds but every screenshot write later fails.
+func (opt *Options) PrepareScreenshotPath() error {
+
+	if err := os.MkdirAll(opt.ScreenshotPath, 0750); err != nil {
+		return fmt.Errorf("could not create screenshot directory %s: %w", opt.ScreenshotPath, err)
+	}
+
+	probe, err := os.CreateTemp(opt.ScreenshotPath, ".gowitness-write-probe-*")
+	if err != nil {
+		return fmt.Errorf("screenshot directory %s is not writable: %w", opt.ScreenshotPath, err)
+	}
+	probe.Close()
+
+	return os.Remove(probe.Name())
 }

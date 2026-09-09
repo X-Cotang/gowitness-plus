@@ -1,11 +1,12 @@
-FROM node:lts-alpine as buildWeb
+FROM node:lts-alpine AS buildWeb
 COPY ./web /src/web
 WORKDIR /src/web
-RUN npm install
+RUN npm ci
 RUN npm run build
 
 
-FROM golang:1-bullseye as buildAPP
+# gowitness needs go >= 1.26 (required by chromedp/cdproto)
+FROM golang:1-bookworm AS buildAPP
 LABEL maintainer="XCT"
 COPY . /src
 COPY --from=buildWeb /src/web/dist /src/web/dist
@@ -15,7 +16,7 @@ RUN make docker
 
 # final image
 # https://github.com/chromedp/docker-headless-shell#using-as-a-base-image
-FROM chromedp/headless-shell:latest
+FROM chromedp/headless-shell:latest AS final
 
 RUN export DEBIAN_FRONTEND=noninteractive \
   && apt-get update \

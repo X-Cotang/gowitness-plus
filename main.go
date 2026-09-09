@@ -6,7 +6,7 @@ import (
 	"github.com/sensepost/gowitness/cmd"
 )
 
-//go:embed web/dist
+//go:embed web/dist web/static-templates
 var assets embed.FS
 
 func main() {

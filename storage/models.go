@@ -181,11 +181,19 @@ type NetworkLog struct {
 	Error       string
 }
 
+// Queue job states, persisted in the ScreenshotQueue PID column.
+const (
+	QueueFailed  = -1 // job errored, ErrorMsg holds the reason
+	QueuePending = 0  // waiting to be picked up by a worker
+	QueueRunning = 1  // claimed by a worker, in flight
+	QueueDone    = 2  // completed successfully
+)
+
 type ScreenshotQueue struct {
 	gorm.Model
 
 	URL      string
-	PID      int
+	PID      int    `gorm:"index"`
 	ErrorMsg string `gorm:"default:''"`
 	Callback string
 	IdUrl    int `gorm:"default:0"`

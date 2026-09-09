@@ -50,7 +50,7 @@ func (p *Processor) Gowitness() (err error) {
 	p.init()
 
 	if err = p.preflight(); err != nil {
-		p.Db.Model(&storage.ScreenshotQueue{}).Where("ID = ?", p.QID).Updates(storage.ScreenshotQueue{PID: -1, ErrorMsg: "preflight request failed - " + err.Error()})
+		p.Db.Model(&storage.ScreenshotQueue{}).Where("ID = ?", p.QID).Updates(storage.ScreenshotQueue{PID: storage.QueueFailed, ErrorMsg: "preflight request failed - " + err.Error()})
 		log.Error().Err(err).Msg("preflight request failed")
 		return
 	}
@@ -60,7 +60,7 @@ func (p *Processor) Gowitness() (err error) {
 	if (len(p.Chrome.ScreenshotCodes) > 0) &&
 		!SliceContainsInt(p.Chrome.ScreenshotCodes, p.preflightResult.HTTPResponse.StatusCode) {
 
-		p.Db.Model(&storage.ScreenshotQueue{}).Where("ID = ?", p.QID).Updates(storage.ScreenshotQueue{PID: -1, ErrorMsg: "response code not in allowed screenshot http response codes. skipping."})
+		p.Db.Model(&storage.ScreenshotQueue{}).Where("ID = ?", p.QID).Updates(storage.ScreenshotQueue{PID: storage.QueueFailed, ErrorMsg: "response code not in allowed screenshot http response codes. skipping."})
 		log.Warn().Int("response-code", p.preflightResult.HTTPResponse.StatusCode).
 			Msg("response code not in allowed screenshot http response codes. skipping.")
 
@@ -68,30 +68,43 @@ func (p *Processor) Gowitness() (err error) {
 	}
 
 	if err = p.takeScreenshot(); err != nil {
-		p.Db.Model(&storage.ScreenshotQueue{}).Where("ID = ?", p.QID).Updates(storage.ScreenshotQueue{PID: -1, ErrorMsg: "failed to take screenshot - " + err.Error()})
+		p.Db.Model(&storage.ScreenshotQueue{}).Where("ID = ?", p.QID).Updates(storage.ScreenshotQueue{PID: storage.QueueFailed, ErrorMsg: "failed to take screenshot - " + err.Error()})
 		log.Error().Err(err).Msg("failed to take screenshot")
 		return
 	}
 
 	if err = p.persistRequest(); err != nil {
-		p.Db.Model(&storage.ScreenshotQueue{}).Where("ID = ?", p.QID).Updates(storage.ScreenshotQueue{PID: -1, ErrorMsg: "failed to store request information - " + err.Error()})
+		p.Db.Model(&storage.ScreenshotQueue{}).Where("ID = ?", p.QID).Updates(storage.ScreenshotQueue{PID: storage.QueueFailed, ErrorMsg: "failed to store request information - " + err.Error()})
 		log.Error().Err(err).Msg("failed to store request information")
 		return
 	}
 
 	if err = p.storePerceptionHash(); err != nil {
-		p.Db.Model(&storage.ScreenshotQueue{}).Where("ID = ?", p.QID).Updates(storage.ScreenshotQueue{PID: -1, ErrorMsg: "failed to calculate and save a perception hash - " + err.Error()})
+		p.Db.Model(&storage.ScreenshotQueue{}).Where("ID = ?", p.QID).Updates(storage.ScreenshotQueue{PID: storage.QueueFailed, ErrorMsg: "failed to calculate and save a perception hash - " + err.Error()})
 		log.Error().Err(err).Msg("failed to calculate and save a perception hash")
 		return
 	}
 
 	if err = p.writeScreenshot(); err != nil {
-		p.Db.Model(&storage.ScreenshotQueue{}).Where("ID = ?", p.QID).Updates(storage.ScreenshotQueue{PID: -1, ErrorMsg: "failed to save screenshot buffer - " + err.Error()})
+		p.Db.Model(&storage.ScreenshotQueue{}).Where("ID = ?", p.QID).Updates(storage.ScreenshotQueue{PID: storage.QueueFailed, ErrorMsg: "failed to save screenshot buffer - " + err.Error()})
 		log.Error().Err(err).Msg("failed to save screenshot buffer")
 		return
 	}
 
+	p.markDone()
+
 	return
+}
+
+// markDone moves the queue entry to its terminal success state. Without this the
+// row stays QueueRunning and keeps consuming a worker slot forever.
+func (p *Processor) markDone() {
+	if p.Db == nil || p.QID == 0 {
+		return
+	}
+
+	p.Db.Model(&storage.ScreenshotQueue{}).Where("ID = ?", p.QID).
+		Updates(map[string]any{"p_id": storage.QueueDone, "error_msg": ""})
 }
 
 // adds the file extension to a given path if the path does not end with the given extension

@@ -26,9 +26,21 @@
 
 `gowitness` is licensed under a [GNU General Public v3 License](https://www.gnu.org/licenses/gpl-3.0.en.html). Permissions beyond the scope of this license may be available at <http://sensepost.com/contact/>.
 
+## building
+
+`web/dist` is generated and not kept in git, but the go binary embeds it, so the
+frontend has to be built before the backend:
+
+```
+cd web && npm ci && npm run build && cd ..
+go build -o gowitness .
+```
+
+Requires go >= 1.26 (a chromedp/cdproto requirement) and a current Node LTS.
+
 ## New Feature  
 
-- [X] Added queue for screenshot feature (MAX_JOB=5).  
+- [X] Added queue for screenshot feature (concurrency defaults to 5, set it with `--max-jobs`).  
 [https://github.com/X-Cotang/gowitness-wrap/blob/51092960f4eccb33d937f0bdec99119057f9ca53/cmd/server.go#L22](https://github.com/X-Cotang/gowitness-wrap/blob/51092960f4eccb33d937f0bdec99119057f9ca53/cmd/server.go#L22)  
 
 ```

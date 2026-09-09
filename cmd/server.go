@@ -12,25 +12,27 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/chikamim/nilsimsa"
 	"github.com/corona10/goimagehash"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-contrib/static"
 	"github.com/gin-gonic/gin"
+	"github.com/robfig/cron/v3"
+	"github.com/rs/zerolog"
 	"github.com/sensepost/gowitness/lib"
 	"github.com/sensepost/gowitness/storage"
 	"github.com/spf13/cobra"
-	"gopkg.in/robfig/cron.v2"
 	"gorm.io/gorm"
 )
 
-const MAX_JOB = 5
+// defaultMaxJobs is how many screenshots may run concurrently by default.
+const defaultMaxJobs = 5
 
 var (
-	rsDB  *gorm.DB
-	theme string = "dark" // or light
+	rsDB    *gorm.DB
+	theme   string = "dark" // or light
+	maxJobs int
 )
 
 // serverCmd represents the server command
@@ -89,52 +91,30 @@ $ gowitness server --address 127.0.0.1:9000 --allow-insecure-uri`,
 			gin.SetMode(gin.ReleaseMode)
 		}
 
-		c := cron.New()
-		c.AddFunc("@every 0h0m30s", func() {
-			// fmt.Println("Every 30 second")
+		if maxJobs < 1 {
+			log.Warn().Int("max-jobs", maxJobs).Int("using", defaultMaxJobs).
+				Msg("max-jobs must be at least 1, falling back to the default")
+			maxJobs = defaultMaxJobs
+		}
 
-			var count int64
-			// var ScQueue []storage.ScreenshotQueue
-			rsDB.Model(&storage.ScreenshotQueue{}).Where("p_id > 1").Count(&count)
-			n := MAX_JOB - count
-			if n < 1 {
-				return
-			}
+		// make sure the screenshot directory exists and is writable up front,
+		// rather than discovering it once every screenshot has already been taken
+		if err := options.PrepareScreenshotPath(); err != nil {
+			log.Fatal().Err(err).Str("path", options.ScreenshotPath).
+				Msg("screenshot path is not usable")
+		}
 
-			var ScQueues []storage.ScreenshotQueue
-			rsDB.Where("p_id = ?", 0).Limit(int(n)).Find(&ScQueues)
-			var wg sync.WaitGroup
-			for _, row := range ScQueues {
-				targetURL, err := url.Parse(row.URL)
-				if err != nil {
-					continue
-				}
-				if err = options.PrepareScreenshotPath(); err != nil {
-					return
-				}
+		reclaimOrphanedJobs(rsDB, log)
 
-				rsDB.Model(&storage.ScreenshotQueue{}).Where("ID = ?", row.ID).Update("PID", 1)
-				log.Info().Str("URL: ", row.URL).Msg("Queue")
-				wg.Add(1)
-				go func(u *url.URL, qid uint, IdUrl int, Callback string) {
-					p := &lib.Processor{
-						Logger:         options.Logger,
-						Db:             rsDB,
-						Chrome:         chrm,
-						URL:            u,
-						QID:            qid,
-						IdUrl:          IdUrl,
-						Callback:       Callback,
-						ScreenshotPath: options.ScreenshotPath,
-					}
-
-					p.Gowitness()
-				}(targetURL, row.ID, row.IdUrl, row.Callback)
-
-			}
-			wg.Wait()
-		})
+		// The queue worker polls for pending jobs and runs at most maxJobs
+		// screenshots concurrently. SkipIfStillRunning keeps a slow tick from
+		// overlapping with the next one and double-claiming jobs.
+		c := cron.New(cron.WithChain(cron.SkipIfStillRunning(cron.DiscardLogger)))
+		if _, err := c.AddFunc("@every 30s", func() { dispatchQueue(rsDB, log) }); err != nil {
+			log.Fatal().Err(err).Msg("could not schedule the screenshot queue worker")
+		}
 		c.Start()
+		defer c.Stop()
 
 		r := gin.Default()
 		r.Use(cors.New(cors.Config{
@@ -215,6 +195,106 @@ func init() {
 	serverCmd.Flags().StringVarP(&options.ServerAddr, "address", "a", "localhost:7171", "server listening address")
 	serverCmd.Flags().BoolVarP(&options.AllowInsecureURIs, "allow-insecure-uri", "A", false, "allow uris that dont start with http(s)")
 	serverCmd.Flags().StringVarP(&options.BasePath, "base-path", "b", "/", "set the servers base path (useful for some reverse proxy setups)")
+	serverCmd.Flags().IntVarP(&maxJobs, "max-jobs", "m", defaultMaxJobs, "maximum number of concurrent screenshot jobs")
+}
+
+// reclaimOrphanedJobs resolves jobs still marked as running at startup, since no
+// worker of this process owns them. A job whose URL already has a stored result
+// completed successfully, so it is marked done; anything else is requeued.
+func reclaimOrphanedJobs(db *gorm.DB, log *zerolog.Logger) {
+	completed := db.Model(&storage.ScreenshotQueue{}).
+		Where("p_id = ?", storage.QueueRunning).
+		Where("EXISTS (SELECT 1 FROM urls WHERE urls.url = screenshot_queues.url AND urls.deleted_at IS NULL)").
+		Update("p_id", storage.QueueDone)
+	if completed.Error != nil {
+		log.Error().Err(completed.Error).Msg("could not reconcile completed screenshot jobs")
+		return
+	}
+
+	requeued := db.Model(&storage.ScreenshotQueue{}).
+		Where("p_id = ?", storage.QueueRunning).
+		Update("p_id", storage.QueuePending)
+	if requeued.Error != nil {
+		log.Error().Err(requeued.Error).Msg("could not requeue orphaned screenshot jobs")
+		return
+	}
+
+	if completed.RowsAffected > 0 || requeued.RowsAffected > 0 {
+		log.Info().Int64("completed", completed.RowsAffected).Int64("requeued", requeued.RowsAffected).
+			Msg("reconciled screenshot jobs left running by a previous run")
+	}
+}
+
+// dispatchQueue claims up to the number of free worker slots worth of pending
+// jobs and screenshots them in the background. It returns as soon as the jobs
+// are launched; in-flight jobs stay marked QueueRunning, so the next tick sees
+// them when working out how many slots are free.
+func dispatchQueue(db *gorm.DB, log *zerolog.Logger) {
+	var running int64
+	if err := db.Model(&storage.ScreenshotQueue{}).
+		Where("p_id = ?", storage.QueueRunning).Count(&running).Error; err != nil {
+		log.Error().Err(err).Msg("could not count running screenshot jobs")
+		return
+	}
+
+	free := int64(maxJobs) - running
+	if free < 1 {
+		return
+	}
+
+	var pending []storage.ScreenshotQueue
+	if err := db.Where("p_id = ?", storage.QueuePending).
+		Order("id asc").Limit(int(free)).Find(&pending).Error; err != nil {
+		log.Error().Err(err).Msg("could not read pending screenshot jobs")
+		return
+	}
+
+	for _, row := range pending {
+		targetURL, err := url.Parse(row.URL)
+		if err != nil {
+			db.Model(&storage.ScreenshotQueue{}).Where("id = ?", row.ID).
+				Updates(map[string]any{"p_id": storage.QueueFailed, "error_msg": "invalid url - " + err.Error()})
+			continue
+		}
+
+		// claim the job, guarding on it still being pending so that a job is
+		// never handed to two workers
+		claim := db.Model(&storage.ScreenshotQueue{}).
+			Where("id = ? AND p_id = ?", row.ID, storage.QueuePending).
+			Update("p_id", storage.QueueRunning)
+		if claim.Error != nil {
+			log.Error().Err(claim.Error).Uint("job", row.ID).Msg("could not claim screenshot job")
+			continue
+		}
+		if claim.RowsAffected == 0 {
+			continue
+		}
+
+		log.Info().Uint("job", row.ID).Str("url", row.URL).Msg("screenshotting queued url")
+
+		go func(u *url.URL, qid uint, idURL int, callback string) {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Error().Interface("panic", r).Uint("job", qid).Msg("screenshot job panicked")
+					db.Model(&storage.ScreenshotQueue{}).Where("id = ?", qid).
+						Updates(map[string]any{"p_id": storage.QueueFailed, "error_msg": fmt.Sprintf("panic: %v", r)})
+				}
+			}()
+
+			p := &lib.Processor{
+				Logger:         options.Logger,
+				Db:             db,
+				Chrome:         chrm,
+				URL:            u,
+				QID:            qid,
+				IdUrl:          idURL,
+				Callback:       callback,
+				ScreenshotPath: options.ScreenshotPath,
+			}
+
+			p.Gowitness()
+		}(targetURL, row.ID, row.IdUrl, row.Callback)
+	}
 }
 
 // middleware
@@ -915,6 +995,14 @@ func apiScreenshotHandlerV2(c *gin.Context) {
 		return
 	}
 
+	if err := options.PrepareScreenshotPath(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"status": "error",
+			"error":  err.Error(),
+		})
+		return
+	}
+
 	var errorsMsg []string
 
 	for _, c_url := range c_urls {
@@ -931,12 +1019,7 @@ func apiScreenshotHandlerV2(c *gin.Context) {
 			}
 		}
 
-		if err = options.PrepareScreenshotPath(); err != nil {
-			errorsMsg = append(errorsMsg, err.Error())
-			continue
-		}
-
-		screenshot_queue := storage.ScreenshotQueue{URL: targetURL.String(), PID: 0, Callback: requestData.Callback, IdUrl: requestData.IdUrl}
+		screenshot_queue := storage.ScreenshotQueue{URL: targetURL.String(), PID: storage.QueuePending, Callback: requestData.Callback, IdUrl: requestData.IdUrl}
 
 		result := rsDB.Create(&screenshot_queue)
 		if result.Error != nil {
@@ -979,6 +1062,14 @@ func apiScreenshotHandlerV3(c *gin.Context) {
 		return
 	}
 
+	if err := options.PrepareScreenshotPath(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"status": "error",
+			"error":  err.Error(),
+		})
+		return
+	}
+
 	var errorsMsg []string
 
 	for _, c_url := range requestData.URLS {
@@ -995,12 +1086,7 @@ func apiScreenshotHandlerV3(c *gin.Context) {
 			}
 		}
 
-		if err = options.PrepareScreenshotPath(); err != nil {
-			errorsMsg = append(errorsMsg, err.Error())
-			continue
-		}
-
-		screenshot_queue := storage.ScreenshotQueue{URL: targetURL.String(), PID: 0, Callback: requestData.Callback, IdUrl: c_url.Id}
+		screenshot_queue := storage.ScreenshotQueue{URL: targetURL.String(), PID: storage.QueuePending, Callback: requestData.Callback, IdUrl: c_url.Id}
 
 		result := rsDB.Create(&screenshot_queue)
 		if result.Error != nil {
